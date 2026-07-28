@@ -28,6 +28,13 @@ INCOMING_RE = re.compile(
     "Dost\\. (?P<balance>\\d+,\\d{2}) PLN$"
 )
 
+DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+
+
+class MbankParseError(Exception):
+    """Raised when an attachment contains what look like transactions, but
+    no date header could be found to timestamp them with."""
+
 
 def _expect_type(expected_type: T.Type[T.Any], item: T.Any) -> T.Any:
     if not isinstance(item, expected_type):
@@ -79,26 +86,67 @@ class MbankAction:
     asdict = dataclasses.asdict
 
 
+def _extract_date(html: lxml.html.HtmlElement) -> T.Optional[str]:
+    """Extracts the report date from a header element. Up to 2026-07-13 mBank
+    used <h5 class="znaki">, since 2026-07-15 it uses <h1 class="h1">. Rather
+    than hardcoding a tag, look for a date in any header, so that the next
+    redesign does not take the parser down with it."""
+    for element in html.xpath("//h1 | //h2 | //h3 | //h4 | //h5 | //h6"):
+        match = DATE_RE.search(element.text_content())
+        if match:
+            return str(match.group(1))
+    return None
+
+
+def _iter_action_matches(
+    html: lxml.html.HtmlElement,
+) -> T.Iterator[T.Tuple[str, "re.Match[str]"]]:
+    """Yields (time, regex match) for every table row that describes a
+    transfer."""
+    rows = _expect_type(list, html.xpath("//tr"))
+    logging.debug("len(rows)=%r", len(rows))
+    for row in rows:
+        desc_e = row.xpath("./td[2]//text()")
+        if not desc_e:
+            logging.debug("Missing desc_e, skipping")
+            continue
+        # Join every text node: the new template splits the description with
+        # inline elements, so taking only the first node would truncate it.
+        desc_s = " ".join(desc_e).strip().replace("\n", "").replace("\r", "")
+        logging.debug("desc_s=%r", desc_s)
+        time_e = row.xpath("./td[1]")
+        if not time_e:
+            logging.debug("Missing time_e, skipping")
+            continue
+        time = time_e[0].text_content().strip()
+        match = INCOMING_RE.match(desc_s)
+        if not match:
+            continue
+        yield time, match
+
+
 def parse_mbank_html(mbank_html: bytes) -> T.Dict[str, T.List[MbankAction]]:
     """Parses mBank .htm attachment file and generates a list of actions
     that were derived from it."""
     html = lxml.html.fromstring(mbank_html)
-    h5_texts = _expect_type(list, html.xpath("//h5/text()"))
-    date: str = h5_texts[0].split(" - ")[0]
     actions = []
-    rows = _expect_type(list, html.xpath("//tr"))[2:]
-    logging.debug("len(rows)=%r", len(rows))
-    for row in rows:
-        desc_e = row.xpath(".//td[2]/text()")
-        if not desc_e:
-            logging.debug("Missing desc_e, skipping")
-            continue
-        desc_s = desc_e[0].strip().replace("\n", "")
-        logging.debug("desc_s=%r", desc_s)
-        time = row.xpath(".//td[1]")[0].text_content().strip()
-        match = INCOMING_RE.match(desc_s)
-        if not match:
-            continue
+    matches = list(_iter_action_matches(html))
+
+    # The date is resolved after collecting the rows, so that "this is not a
+    # transaction e-mail" (empty, fine) can be told apart from "there are
+    # transactions but no date to stamp them with" (loud failure - silently
+    # returning nothing here would lose transfers).
+    date = _extract_date(html)
+    if date is None:
+        if matches:
+            raise MbankParseError(
+                f"found {len(matches)} transaction rows, but no header "
+                f"contains a date - mBank likely changed the template"
+            )
+        logging.warning("No date header and no transaction rows; skipping")
+        return {"actions": []}
+
+    for time, match in matches:
         action = {}
         action.update(match.groupdict())
         action["action_type"] = {

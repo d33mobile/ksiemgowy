@@ -12,6 +12,12 @@ jobs:
     unittest_and_docs:
         runs-on: ubuntu-latest
 
+        # The job pushes the regenerated coverage report back to the branch.
+        # Since 2023 the default GITHUB_TOKEN is read-only on new repositories
+        # and on every fork, so the write has to be asked for explicitly.
+        permissions:
+            contents: write
+
         steps:
             - uses: actions/checkout@v7
             - name: Set up Python 3.8
@@ -35,6 +41,11 @@ jobs:
             - name: regenerage docs
               run: cd docs/_sphinx && make
             - uses: stefanzweifel/git-auto-commit-action@v7
+              # A pull_request event from a fork always gets a read-only
+              # token, whatever `permissions` says, so pushing back would
+              # fail every such run. The push event covers the same commits
+              # anyway.
+              if: github.event_name == 'push'
               with:
                   commit_message: Autoupdate code coverage stats
 

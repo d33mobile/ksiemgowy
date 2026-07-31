@@ -62,8 +62,12 @@ class MbankAction:
         """Anonymizes all potentially sensitive fields using
         mbank_anonymization_key as cryptographic pepper."""
         new = copy.copy(self)
-        new.sender_acc_no = anonymize(self.sender_acc_no, mbank_anonymization_key)
-        new.recipient_acc_no = anonymize(self.recipient_acc_no, mbank_anonymization_key)
+        new.sender_acc_no = anonymize(
+            self.sender_acc_no, mbank_anonymization_key
+        )
+        new.recipient_acc_no = anonymize(
+            self.recipient_acc_no, mbank_anonymization_key
+        )
         new.in_person = anonymize(self.in_person, mbank_anonymization_key)
         new.in_desc = anonymize(self.in_desc, mbank_anonymization_key)
         return new
